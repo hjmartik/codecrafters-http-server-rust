@@ -1,22 +1,16 @@
-// Uncomment this block to pass the first stage
-// use std::net::TcpListener;
+use anyhow::{Context, Result};
+use tokio::net::TcpListener;
+use http_server_starter_rust::http;
 
-fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    println!("Logs from your program will appear here!");
+const DEFAULT_PORT: u32 = 4221;
 
-    // Uncomment this block to pass the first stage
-    //
-    // let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
-    //
-    // for stream in listener.incoming() {
-    //     match stream {
-    //         Ok(_stream) => {
-    //             println!("accepted new connection");
-    //         }
-    //         Err(e) => {
-    //             println!("error: {}", e);
-    //         }
-    //     }
-    // }
+#[tokio::main]
+async fn main() -> Result<()> {
+    let addr = format!("127.0.0.1:{}", DEFAULT_PORT);
+    let listener = TcpListener::bind(&addr)
+        .await
+        .with_context(|| format!("failed to bind to {}", addr))?;
+
+    http::run_server(listener).await;
+    Ok(())
 }
