@@ -3,9 +3,9 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-use self::bytes::Framer;
+use self::request::{Request, RequestParser, RequestParserError};
 
-pub mod bytes;
+pub mod request;
 
 pub async fn run_server(listener: TcpListener) {
     loop {
@@ -25,14 +25,14 @@ pub async fn run_server(listener: TcpListener) {
 
 struct Connection {
     stream: BufWriter<TcpStream>,
-    framer: Framer,
+    parser: RequestParser,
 }
 
 impl Connection {
     pub fn new(stream: TcpStream) -> Self {
         Connection {
             stream: BufWriter::new(stream),
-            framer: Framer::new(),
+            parser: RequestParser::new(),
         }
     }
 
@@ -41,10 +41,30 @@ impl Connection {
         self.stream.flush().await?;
         Ok(())
     }
+
+    pub async fn read_request(&mut self) -> Result<Option<Request>, RequestParserError> {
+        match self.parser.read_request(&mut self.stream).await {
+            Ok(request) => Ok(Some(request)),
+            Err(e @ RequestParserError::Disconnect) => {
+                if self.parser.buffer_is_empty() {
+                    return Ok(None);
+                }
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 async fn handle_client(stream: TcpStream) -> anyhow::Result<()> {
     let mut conn = Connection::new(stream);
-    conn.write(b"HTTP/1.1 200 OK\r\n\r\n").await?;
+    let request = conn.read_request().await?;
+    if let Some(request) = request {
+        eprintln!("{}", request.path);
+        match request.path.as_str() {
+            "/" => conn.write(b"HTTP/1.1 200 OK\r\n\r\n").await?,
+            _ => conn.write(b"HTTP/1.1 404 Not Found\r\n\r\n").await?,
+        }
+    }
     Ok(())
 }
