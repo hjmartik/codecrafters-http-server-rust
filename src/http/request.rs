@@ -104,7 +104,7 @@ fn get_until_crlf<'a>(cursor: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Request
     let start = cursor.position() as usize;
     let slice = cursor.get_ref();
     let end = slice.len();
-    if end == 0 {
+    if end < 2 {
         return Err(RequestError::Incomplete);
     }
 
