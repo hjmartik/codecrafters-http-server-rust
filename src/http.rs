@@ -5,10 +5,11 @@ use tokio::{
 
 use self::request::{Request, RequestParser, RequestParserError};
 
+pub mod helpers;
 pub mod request;
 pub mod response;
 pub mod status;
-pub mod headers;
+pub mod header;
 
 pub async fn run_server(listener: TcpListener) {
     loop {
@@ -66,12 +67,28 @@ async fn handle_client(stream: TcpStream) -> anyhow::Result<()> {
         eprintln!("{}", request.path);
         match request.path.as_str() {
             "/" => conn.write(b"HTTP/1.1 200 OK\r\n\r\n").await?,
-            path if path.starts_with("/echo/")  => {
+            path if path.starts_with("/echo/") => {
                 let echo = path.strip_prefix("/echo/").unwrap();
-                let response = format!("HTTP/1.1 200 OK\r\n\
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n\
                            Content-Type: text/plain\r\n\
                            Content-Length: {}\r\n\r\n\
-                           {}", echo.len(), echo);
+                           {}",
+                    echo.len(),
+                    echo
+                );
+                conn.write(response.as_bytes()).await?;
+            }
+            path if path.starts_with("/user-agent") => {
+                let user_agent = request.headers.get("user-agent").unwrap_or("");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n\
+                           Content-Type: text/plain\r\n\
+                           Content-Length: {}\r\n\r\n\
+                           {}",
+                    user_agent.len(),
+                    user_agent
+                );
                 conn.write(response.as_bytes()).await?;
             }
             _ => conn.write(b"HTTP/1.1 404 Not Found\r\n\r\n").await?,

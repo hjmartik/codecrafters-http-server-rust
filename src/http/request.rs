@@ -1,3 +1,5 @@
+use crate::http::header::Headers;
+use crate::http::helpers::{self, CursorError};
 use bytes::{Buf, BufMut, BytesMut};
 use std::{
     io::Cursor,
@@ -6,24 +8,45 @@ use std::{
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+#[derive(Debug)]
 pub struct Request {
     pub path: String,
+    pub headers: Headers,
 }
 
 impl Request {
     pub fn validate(cursor: &mut Cursor<&[u8]>) -> Result<(), RequestError> {
-        get_until_crlf(cursor)?;
+        // start line present
+        helpers::get_until_crlf(cursor)?;
+        // are there headers
+        loop {
+            let line = helpers::get_until_crlf(cursor)?;
+            if line.is_empty() {
+                break;
+            }
+        }
         Ok(())
     }
 
     pub fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Request, RequestError> {
-        let request_line = str::from_utf8(get_until_crlf(cursor)?)?;
+        let request_line = str::from_utf8(helpers::get_until_crlf(cursor)?)?;
         let path = request_line
             .split(' ')
             .nth(1)
             .ok_or(RequestError::Invalid)?
             .to_owned();
-        Ok(Request { path })
+        let mut headers = Headers::new();
+        loop {
+            let header_line = str::from_utf8(helpers::get_until_crlf(cursor)?)?;
+            if header_line.is_empty() {
+                break;
+            }
+            let (key, value) = header_line.split_once(':').ok_or(RequestError::Invalid)?;
+            let value = value.trim();
+            headers.insert(key.to_owned(), value.to_owned());
+        }
+
+        Ok(Request { path, headers })
     }
 }
 
@@ -38,6 +61,15 @@ pub enum RequestError {
 
     #[error("invalid request")]
     Invalid,
+}
+
+impl From<CursorError> for RequestError {
+    fn from(err: CursorError) -> Self {
+        match err {
+            CursorError::Invalid => RequestError::Invalid,
+            CursorError::Incomplete => RequestError::Incomplete,
+        }
+    }
 }
 
 impl From<Utf8Error> for RequestError {
@@ -84,7 +116,10 @@ impl RequestParser {
     {
         loop {
             match self.request_from_buffer() {
-                Ok(request) => return Ok(request),
+                Ok(request) => {
+                    println!("request: {:?}", request);
+                    return Ok(request);
+                }
                 Err(RequestError::Incomplete) => {
                     if 0 == reader.read_buf(&mut self.buf).await? {
                         return Err(RequestParserError::Disconnect);
@@ -100,24 +135,6 @@ impl RequestParser {
     }
 }
 
-fn get_until_crlf<'a>(cursor: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], RequestError> {
-    let start = cursor.position() as usize;
-    let slice = cursor.get_ref();
-    let end = slice.len();
-    if end < 2 {
-        return Err(RequestError::Incomplete);
-    }
-
-    for i in start..(end - 1) {
-        if slice[i] == b'\r' && slice[i + 1] == b'\n' {
-            cursor.set_position((i + 2) as u64);
-            return Ok(&cursor.get_ref()[start..i]);
-        }
-    }
-
-    Err(RequestError::Incomplete)
-}
-
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -128,10 +145,20 @@ mod tests {
     fn request_path() -> Result<(), anyhow::Error> {
         let mut parser = RequestParser::new();
         parser.put(
-            &b"GET /index.html HTTP/1.1\r\nHost: localhost:4221\r\nUser-Agent: curl/7.64.1"[..],
+            &b"GET /index.html HTTP/1.1\r\nHost: localhost:4221\r\nUser-Agent: curl/7.64.1\r\n\r\n"
+                [..],
         );
         let request = parser.request_from_buffer()?;
         assert_eq!(request.path, "/index.html");
+        Ok(())
+    }
+
+    #[test]
+    fn no_headers() -> Result<(), anyhow::Error> {
+        let mut parser = RequestParser::new();
+        parser.put(&b"GET /index.html HTTP/1.1\r\n\r\n"[..]);
+        let request = parser.request_from_buffer()?;
+        assert!(request.headers.is_empty());
         Ok(())
     }
 }
