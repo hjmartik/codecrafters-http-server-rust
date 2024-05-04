@@ -117,7 +117,6 @@ impl RequestParser {
         loop {
             match self.request_from_buffer() {
                 Ok(request) => {
-                    println!("request: {:?}", request);
                     return Ok(request);
                 }
                 Err(RequestError::Incomplete) => {
