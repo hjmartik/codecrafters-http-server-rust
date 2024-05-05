@@ -2,11 +2,7 @@ use tokio::io::AsyncRead;
 
 use crate::http::header::Headers;
 use crate::http::status::StatusCode;
-
-pub enum Body {
-    Reader(Box<dyn AsyncRead + Send + Sync>),
-    Data(Vec<u8>),
-}
+use crate::http::Body;
 
 pub struct Response {
     pub status: StatusCode,

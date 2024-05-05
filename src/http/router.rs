@@ -7,39 +7,55 @@ use crate::http::request::Request;
 use crate::http::response::Response;
 use crate::http::State;
 
-use super::handlers;
+use super::{handlers, Method};
 
 pub type BoxResponseFuture = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
 type Handler = Box<dyn Fn(Request, State) -> BoxResponseFuture + Send + Sync + 'static>;
 
-type HandlerMap = HashMap<String, Handler>;
+struct HandlerEntry {
+    handler: Handler,
+    method: Method,
+}
+
+type HandlerMap = HashMap<String, HandlerEntry>;
 
 #[derive(Clone)]
 pub struct Router(Arc<RouterInner>);
 
 pub struct RouterInner {
     exact: HandlerMap,
-    starts_with: Vec<(String, Handler)>,
+    starts_with: Vec<(String, HandlerEntry)>,
 }
 
 impl RouterInner {
-    pub fn exact_route<C>(mut self, mut path: &str, callback: C) -> Self
+    pub fn exact_route<H>(mut self, mut path: &str, method: Method, handler: H) -> Self
     where
-        C: Fn(Request, State) -> BoxResponseFuture + Send + Sync + 'static,
+        H: Fn(Request, State) -> BoxResponseFuture + Send + Sync + 'static,
     {
         if path != "/" {
             path = path.strip_suffix("/").unwrap_or(path);
         }
-        self.exact.insert(path.to_string(), Box::new(callback));
+        self.exact.insert(
+            path.to_string(),
+            HandlerEntry {
+                handler: Box::new(handler),
+                method,
+            },
+        );
         self
     }
 
-    pub fn starts_with_route<C>(mut self, path: &str, callback: C) -> Self
+    pub fn starts_with_route<H>(mut self, path: &str, method: Method, handler: H) -> Self
     where
-        C: Fn(Request, State) -> BoxResponseFuture + Send + Sync + 'static,
+        H: Fn(Request, State) -> BoxResponseFuture + Send + Sync + 'static,
     {
-        self.starts_with
-            .push((path.to_string(), Box::new(callback)));
+        self.starts_with.push((
+            path.to_string(),
+            HandlerEntry {
+                handler: Box::new(handler),
+                method,
+            },
+        ));
         self
     }
 
@@ -57,22 +73,32 @@ impl Router {
     }
 
     pub async fn handle(&self, request: Request, state: State) -> Response {
+        let mut route_seen_flag = false;
         let path = &request.path;
         let key = match path.as_str() {
             "/" => "/",
             _ => path.strip_suffix("/").unwrap_or(path),
         };
 
-        if let Some(handler) = self.0.exact.get(key) {
-            return handler(request, state).await;
-        }
-
-        for (prefix, handler) in &self.0.starts_with {
-            if path.starts_with(prefix) {
-                return handler(request, state).await;
+        if let Some(handler_entry) = self.0.exact.get(key) {
+            route_seen_flag = true;
+            if handler_entry.method == request.method {
+                return (handler_entry.handler)(request, state).await;
             }
         }
 
+        for (prefix, handler_entry) in &self.0.starts_with {
+            if path.starts_with(prefix) {
+                route_seen_flag = true;
+                if handler_entry.method == request.method {
+                    return (handler_entry.handler)(request, state).await;
+                }
+            }
+        }
+
+        if route_seen_flag {
+            return handlers::method_not_allowed_handler(request, state).await;
+        }
         handlers::not_found_handler(request, state).await
     }
 }

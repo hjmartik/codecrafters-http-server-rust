@@ -1,5 +1,6 @@
 use crate::http::header::Headers;
 use crate::http::helpers::{self, CursorError};
+use crate::http::Body;
 use bytes::{Buf, BufMut, BytesMut};
 use std::{
     io::Cursor,
@@ -8,33 +9,39 @@ use std::{
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-#[derive(Debug)]
+use super::Method;
+
 pub struct Request {
+    pub method: Method,
     pub path: String,
     pub headers: Headers,
+    pub body: Option<Body>,
 }
 
 impl Request {
     pub fn validate(cursor: &mut Cursor<&[u8]>) -> Result<(), RequestError> {
-        // start line present
-        helpers::get_until_crlf(cursor)?;
-        // are there headers
-        loop {
-            let line = helpers::get_until_crlf(cursor)?;
-            if line.is_empty() {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Request, RequestError> {
         let request_line = str::from_utf8(helpers::get_until_crlf(cursor)?)?;
-        let path = request_line
+
+        let method = match request_line
             .split(' ')
-            .nth(1)
+            .next()
             .ok_or(RequestError::Invalid)?
-            .to_owned();
+        {
+            "GET" => Method::GET,
+            "POST" => Method::POST,
+            _ => return Err(RequestError::Invalid),
+        };
+
+        if method == Method::GET {
+            loop {
+                let line = helpers::get_until_crlf(cursor)?;
+                if line.is_empty() {
+                    break;
+                }
+            }
+            return Ok(());
+        }
+
         let mut headers = Headers::new();
         loop {
             let header_line = str::from_utf8(helpers::get_until_crlf(cursor)?)?;
@@ -46,7 +53,63 @@ impl Request {
             headers.insert(key.to_owned(), value.to_owned());
         }
 
-        Ok(Request { path, headers })
+        let content_length: usize = headers
+            .get("Content-Length")
+            .ok_or(RequestError::Invalid)?
+            .parse()
+            .map_err(|_| RequestError::Invalid)?;
+
+        helpers::read_n(cursor, content_length)?;
+
+        Ok(())
+    }
+
+    pub fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Request, RequestError> {
+        let request_line = str::from_utf8(helpers::get_until_crlf(cursor)?)?;
+
+        let mut splitted = request_line.split(' ');
+        let method = match splitted.next().ok_or(RequestError::Invalid)? {
+            "GET" => Method::GET,
+            "POST" => Method::POST,
+            _ => return Err(RequestError::Invalid),
+        };
+
+        let path = splitted.next().ok_or(RequestError::Invalid)?.to_owned();
+
+        let mut headers = Headers::new();
+        loop {
+            let header_line = str::from_utf8(helpers::get_until_crlf(cursor)?)?;
+            if header_line.is_empty() {
+                break;
+            }
+            let (key, value) = header_line.split_once(':').ok_or(RequestError::Invalid)?;
+            let value = value.trim();
+            headers.insert(key.to_owned(), value.to_owned());
+        }
+
+        if method == Method::GET {
+            return Ok(Request {
+                method,
+                path,
+                headers,
+                body: None,
+            });
+        }
+
+        let content_length: usize = headers
+            .get("Content-Length")
+            .ok_or(RequestError::Invalid)?
+            .parse()
+            .map_err(|_| RequestError::Invalid)?;
+
+        let data = helpers::read_n(cursor, content_length)?.to_owned();
+
+        return Ok(Request {
+            method,
+            path,
+            headers,
+            body: Some(Body::Data(data)),
+        });
     }
 }
 

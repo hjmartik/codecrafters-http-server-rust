@@ -1,3 +1,4 @@
+use bytes::Buf;
 use std::io::Cursor;
 use thiserror::Error;
 
@@ -26,4 +27,14 @@ pub(crate) fn get_until_crlf<'a>(cursor: &mut Cursor<&'a [u8]>) -> Result<&'a [u
     }
 
     Err(CursorError::Incomplete)
+}
+
+pub(crate) fn read_n<'a>(cursor: &mut Cursor<&'a [u8]>, n: usize) -> Result<&'a [u8], CursorError> {
+    if cursor.remaining() < n {
+        return Err(CursorError::Incomplete);
+    }
+    let start = cursor.position() as usize;
+    let end = start + n;
+    cursor.advance(n);
+    Ok(&cursor.get_ref()[start..end])
 }

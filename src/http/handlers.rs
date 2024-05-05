@@ -1,12 +1,13 @@
 use std::path::Path;
 
+use crate::http::Body;
 use crate::http::{header::Headers, status::StatusCode};
 use tokio::fs::File;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::router::BoxResponseFuture;
-use super::{request::Request, response::Response};
 use super::State;
+use super::{request::Request, response::Response};
 
 pub fn echo_handler(request: Request, _state: State) -> BoxResponseFuture {
     // error handling...
@@ -27,8 +28,12 @@ pub fn not_found_handler(_request: Request, _state: State) -> BoxResponseFuture 
     Box::pin(async { Response::from_status(StatusCode::NotFound) })
 }
 
-pub fn internal_erro_handler(_request: Request, _state: State) -> BoxResponseFuture {
+pub fn internal_error_handler(_request: Request, _state: State) -> BoxResponseFuture {
     Box::pin(async { Response::from_status(StatusCode::Internal) })
+}
+
+pub fn method_not_allowed_handler(_request: Request, _state: State) -> BoxResponseFuture {
+    Box::pin(async { Response::from_status(StatusCode::MethodNotAllowed) })
 }
 
 pub fn user_agent_handler(request: Request, _state: State) -> BoxResponseFuture {
@@ -41,22 +46,19 @@ pub fn user_agent_handler(request: Request, _state: State) -> BoxResponseFuture 
     })
 }
 
-pub fn file_handler(request: Request, state: State) -> BoxResponseFuture {
+pub fn file_get_handler(request: Request, state: State) -> BoxResponseFuture {
     Box::pin(async move {
         let file_path = match request.path.strip_prefix("/files/") {
             Some(path) => path,
-            None => return internal_erro_handler(request, state).await,
+            None => return internal_error_handler(request, state).await,
         };
 
         let dir = match state.file_dir() {
             Some(dir) => dir,
-            None => return internal_erro_handler(request, state).await,
+            None => return internal_error_handler(request, state).await,
         };
 
-        println!("directory: {}", dir);
-        println!("file path: {}", file_path);
         let path = Path::new(dir).join(file_path);
-        println!("path: {:?}", path);
 
         let mut file = match File::open(path).await {
             Ok(file) => file,
@@ -65,7 +67,7 @@ pub fn file_handler(request: Request, state: State) -> BoxResponseFuture {
         let mut buf = Vec::new();
         let length = match file.read_to_end(&mut buf).await {
             Ok(l) => l,
-            Err(_) => return internal_erro_handler(request, state).await,
+            Err(_) => return internal_error_handler(request, state).await,
         };
 
         let mut headers = Headers::new();
@@ -76,5 +78,42 @@ pub fn file_handler(request: Request, state: State) -> BoxResponseFuture {
         headers.insert_header_line(format!("Content-Length: {}", length));
 
         Response::from_data(StatusCode::Ok, headers, buf)
+    })
+}
+
+pub fn file_post_handler(mut request: Request, state: State) -> BoxResponseFuture {
+    Box::pin(async move {
+        let file_path = match request.path.strip_prefix("/files/") {
+            Some(path) => path,
+            None => return internal_error_handler(request, state).await,
+        };
+
+        let dir = match state.file_dir() {
+            Some(dir) => dir,
+            None => return internal_error_handler(request, state).await,
+        };
+
+        let path = Path::new(dir).join(file_path);
+
+        let mut file = match File::create(path).await {
+            Ok(file) => file,
+            Err(_) => return internal_error_handler(request, state).await,
+        };
+
+        let data = match request.body.take() {
+            Some(Body::Data(data)) => data,
+            _ => return internal_error_handler(request, state).await,
+        };
+       
+
+        if let Err(_) = file.write_all(&data).await {
+            return internal_error_handler(request, state).await;
+        }
+
+        if let Err(_) = file.flush().await {
+            return internal_error_handler(request, state).await;
+        }
+
+         Response::from_status(StatusCode::Created) 
     })
 }

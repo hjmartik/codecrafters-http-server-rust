@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use tokio::{
-    io::{AsyncWriteExt, BufWriter},
+    io::{AsyncRead, AsyncWriteExt, BufWriter},
     net::{TcpListener, TcpStream},
 };
 
 use self::{
     request::{Request, RequestParser, RequestParserError},
-    response::{Body, Response},
+    response::Response,
     router::Router,
 };
 
@@ -19,16 +19,27 @@ pub mod response;
 pub mod router;
 pub mod status;
 
+pub enum Body {
+    Reader(Box<dyn AsyncRead + Send + Sync>),
+    Data(Vec<u8>),
+}
+
+#[derive(PartialEq)]
+pub enum Method {
+    GET,
+    POST,
+}
+
 #[derive(Clone)]
 pub struct State(Arc<StateInner>);
 
 struct StateInner {
-    pub file_dir: Option<String>
+    pub file_dir: Option<String>,
 }
 
 impl StateInner {
     fn file_dir(mut self, dir: String) -> Self {
-        self.file_dir =  Some(dir);
+        self.file_dir = Some(dir);
         self
     }
 
@@ -39,26 +50,25 @@ impl StateInner {
 
 impl State {
     fn builder() -> StateInner {
-        StateInner {
-            file_dir: None
-        }
+        StateInner { file_dir: None }
     }
 
     fn file_dir(&self) -> Option<&str> {
         self.0.file_dir.as_ref().map(|s| s.as_str())
     }
-
 }
 
 pub async fn run_server(listener: TcpListener, file_directory: Option<String>) {
     let mut state_builder = State::builder();
 
     let mut router_builder = Router::builder()
-        .exact_route("/", handlers::ok_handler)
-        .exact_route("/user-agent", handlers::user_agent_handler)
-        .starts_with_route("/echo/", handlers::echo_handler);
+        .exact_route("/", Method::GET, handlers::ok_handler)
+        .exact_route("/user-agent", Method::GET, handlers::user_agent_handler)
+        .starts_with_route("/echo/", Method::GET, handlers::echo_handler);
     if let Some(dir) = file_directory {
-        router_builder = router_builder.starts_with_route("/files/", handlers::file_handler);
+        router_builder = router_builder
+            .starts_with_route("/files/", Method::GET, handlers::file_get_handler)
+            .starts_with_route("/files/", Method::POST, handlers::file_post_handler);
         state_builder = state_builder.file_dir(dir);
     }
     let router = router_builder.build();
