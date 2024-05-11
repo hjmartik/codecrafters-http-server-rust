@@ -1,6 +1,5 @@
 use std::{borrow::Borrow, collections::HashMap, hash::Hash};
 
-
 type HeaderMap = HashMap<String, String>;
 #[derive(Debug)]
 pub struct Headers(HeaderMap);

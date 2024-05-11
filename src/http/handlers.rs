@@ -12,7 +12,7 @@ use super::{request::Request, response::Response};
 pub fn echo_handler(request: Request, _state: State) -> BoxResponseFuture {
     // error handling...
     Box::pin(async move {
-        let echo = request.path.strip_prefix("/echo/").unwrap();
+        let echo = request.metadata.path.strip_prefix("/echo/").unwrap();
         let mut headers = Headers::new();
         headers.insert("Content-Type".to_string(), "text/plain".to_string());
         headers.insert_header_line(format!("Content-Length: {}", echo.len()));
@@ -38,7 +38,7 @@ pub fn method_not_allowed_handler(_request: Request, _state: State) -> BoxRespon
 
 pub fn user_agent_handler(request: Request, _state: State) -> BoxResponseFuture {
     Box::pin(async move {
-        let user_agent = request.headers.get("User-Agent").unwrap_or("");
+        let user_agent = request.metadata.headers.get("User-Agent").unwrap_or("");
         let mut headers = Headers::new();
         headers.insert("Content-Type".to_string(), "text/plain".to_string());
         headers.insert_header_line(format!("Content-Length: {}", user_agent.len()));
@@ -48,7 +48,7 @@ pub fn user_agent_handler(request: Request, _state: State) -> BoxResponseFuture 
 
 pub fn file_get_handler(request: Request, state: State) -> BoxResponseFuture {
     Box::pin(async move {
-        let file_path = match request.path.strip_prefix("/files/") {
+        let file_path = match request.metadata.path.strip_prefix("/files/") {
             Some(path) => path,
             None => return internal_error_handler(request, state).await,
         };
@@ -83,7 +83,7 @@ pub fn file_get_handler(request: Request, state: State) -> BoxResponseFuture {
 
 pub fn file_post_handler(mut request: Request, state: State) -> BoxResponseFuture {
     Box::pin(async move {
-        let file_path = match request.path.strip_prefix("/files/") {
+        let file_path = match request.metadata.path.strip_prefix("/files/") {
             Some(path) => path,
             None => return internal_error_handler(request, state).await,
         };
@@ -104,7 +104,6 @@ pub fn file_post_handler(mut request: Request, state: State) -> BoxResponseFutur
             Some(Body::Data(data)) => data,
             _ => return internal_error_handler(request, state).await,
         };
-       
 
         if let Err(_) = file.write_all(&data).await {
             return internal_error_handler(request, state).await;
@@ -114,6 +113,6 @@ pub fn file_post_handler(mut request: Request, state: State) -> BoxResponseFutur
             return internal_error_handler(request, state).await;
         }
 
-         Response::from_status(StatusCode::Created) 
+        Response::from_status(StatusCode::Created)
     })
 }

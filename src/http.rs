@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use tokio::{
     io::{AsyncRead, AsyncWriteExt, BufWriter},
@@ -14,6 +14,7 @@ use self::{
 pub mod handlers;
 pub mod header;
 pub mod helpers;
+pub mod middleware;
 pub mod request;
 pub mod response;
 pub mod router;
@@ -35,11 +36,17 @@ pub struct State(Arc<StateInner>);
 
 struct StateInner {
     pub file_dir: Option<String>,
+    pub supported_encodings: HashSet<String>,
 }
 
 impl StateInner {
     fn file_dir(mut self, dir: String) -> Self {
         self.file_dir = Some(dir);
+        self
+    }
+
+    fn encoding(mut self, encoding: String) -> Self {
+        self.supported_encodings.insert(encoding);
         self
     }
 
@@ -50,18 +57,26 @@ impl StateInner {
 
 impl State {
     fn builder() -> StateInner {
-        StateInner { file_dir: None }
+        StateInner {
+            file_dir: None,
+            supported_encodings: HashSet::new(),
+        }
     }
 
     fn file_dir(&self) -> Option<&str> {
         self.0.file_dir.as_ref().map(|s| s.as_str())
     }
+
+    fn supported_encoding(&self, encoding: &str) -> bool {
+        self.0.supported_encodings.contains(encoding)
+    }
 }
 
 pub async fn run_server(listener: TcpListener, file_directory: Option<String>) {
-    let mut state_builder = State::builder();
+    let mut state_builder = State::builder().encoding("gzip".to_string());
 
     let mut router_builder = Router::builder()
+        .add_pre_middleware(middleware::content_encoding)
         .exact_route("/", Method::GET, handlers::ok_handler)
         .exact_route("/user-agent", Method::GET, handlers::user_agent_handler)
         .starts_with_route("/echo/", Method::GET, handlers::echo_handler);

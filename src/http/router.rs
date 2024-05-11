@@ -10,7 +10,8 @@ use crate::http::State;
 use super::{handlers, Method};
 
 pub type BoxResponseFuture = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
-type Handler = Box<dyn Fn(Request, State) -> BoxResponseFuture + Send + Sync + 'static>;
+pub type Handler = Box<dyn Fn(Request, State) -> BoxResponseFuture + Send + Sync + 'static>;
+pub type Middleware = Box<dyn Fn(Handler) -> Handler + Send + Sync + 'static>;
 
 struct HandlerEntry {
     handler: Handler,
@@ -25,6 +26,7 @@ pub struct Router(Arc<RouterInner>);
 pub struct RouterInner {
     exact: HandlerMap,
     starts_with: Vec<(String, HandlerEntry)>,
+    pre_middleware: Vec<Middleware>,
 }
 
 impl RouterInner {
@@ -35,13 +37,14 @@ impl RouterInner {
         if path != "/" {
             path = path.strip_suffix("/").unwrap_or(path);
         }
-        self.exact.insert(
-            path.to_string(),
-            HandlerEntry {
-                handler: Box::new(handler),
-                method,
-            },
-        );
+
+        let mut handler: Handler = Box::new(handler);
+        for middleware in &self.pre_middleware {
+            handler = middleware(handler);
+        }
+
+        self.exact
+            .insert(path.to_string(), HandlerEntry { handler, method });
         self
     }
 
@@ -49,13 +52,25 @@ impl RouterInner {
     where
         H: Fn(Request, State) -> BoxResponseFuture + Send + Sync + 'static,
     {
+        let mut handler: Handler = Box::new(handler);
+        for middleware in &self.pre_middleware {
+            handler = middleware(handler);
+        }
         self.starts_with.push((
             path.to_string(),
             HandlerEntry {
-                handler: Box::new(handler),
+                handler,
                 method,
             },
         ));
+        self
+    }
+
+    pub fn add_pre_middleware<M>(mut self, middleware: M) -> Self
+    where
+        M: Fn(Handler) -> Handler + Send + Sync + 'static,
+    {
+        self.pre_middleware.push(Box::new(middleware));
         self
     }
 
@@ -69,12 +84,13 @@ impl Router {
         RouterInner {
             exact: HashMap::new(),
             starts_with: Vec::new(),
+            pre_middleware: Vec::new(),
         }
     }
 
     pub async fn handle(&self, request: Request, state: State) -> Response {
         let mut route_seen_flag = false;
-        let path = &request.path;
+        let path = &request.metadata.path;
         let key = match path.as_str() {
             "/" => "/",
             _ => path.strip_suffix("/").unwrap_or(path),
@@ -82,7 +98,7 @@ impl Router {
 
         if let Some(handler_entry) = self.0.exact.get(key) {
             route_seen_flag = true;
-            if handler_entry.method == request.method {
+            if handler_entry.method == request.metadata.method {
                 return (handler_entry.handler)(request, state).await;
             }
         }
@@ -90,7 +106,7 @@ impl Router {
         for (prefix, handler_entry) in &self.0.starts_with {
             if path.starts_with(prefix) {
                 route_seen_flag = true;
-                if handler_entry.method == request.method {
+                if handler_entry.method == request.metadata.method {
                     return (handler_entry.handler)(request, state).await;
                 }
             }

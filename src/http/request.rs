@@ -12,59 +12,34 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use super::Method;
 
 pub struct Request {
-    pub method: Method,
-    pub path: String,
-    pub headers: Headers,
+    pub metadata: Metadata,
     pub body: Option<Body>,
 }
 
-impl Request {
+pub struct Metadata {
+    pub method: Method,
+    pub path: String,
+    pub headers: Headers,
+}
+
+impl Metadata {
+    pub fn new(method: Method, path: String, headers: Headers) -> Self {
+        Metadata {
+            method,
+            path,
+            headers,
+        }
+    }
+}
+
+impl Metadata {
     pub fn validate(cursor: &mut Cursor<&[u8]>) -> Result<(), RequestError> {
-        let request_line = str::from_utf8(helpers::get_until_crlf(cursor)?)?;
-
-        let method = match request_line
-            .split(' ')
-            .next()
-            .ok_or(RequestError::Invalid)?
-        {
-            "GET" => Method::GET,
-            "POST" => Method::POST,
-            _ => return Err(RequestError::Invalid),
-        };
-
-        if method == Method::GET {
-            loop {
-                let line = helpers::get_until_crlf(cursor)?;
-                if line.is_empty() {
-                    break;
-                }
-            }
-            return Ok(());
-        }
-
-        let mut headers = Headers::new();
-        loop {
-            let header_line = str::from_utf8(helpers::get_until_crlf(cursor)?)?;
-            if header_line.is_empty() {
-                break;
-            }
-            let (key, value) = header_line.split_once(':').ok_or(RequestError::Invalid)?;
-            let value = value.trim();
-            headers.insert(key.to_owned(), value.to_owned());
-        }
-
-        let content_length: usize = headers
-            .get("Content-Length")
-            .ok_or(RequestError::Invalid)?
-            .parse()
-            .map_err(|_| RequestError::Invalid)?;
-
-        helpers::read_n(cursor, content_length)?;
-
+        helpers::get_until_crlf(cursor)?;
+        while !helpers::get_until_crlf(cursor)?.is_empty() {}
         Ok(())
     }
 
-    pub fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Request, RequestError> {
+    pub fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Metadata, RequestError> {
         let request_line = str::from_utf8(helpers::get_until_crlf(cursor)?)?;
 
         let mut splitted = request_line.split(' ');
@@ -87,29 +62,7 @@ impl Request {
             headers.insert(key.to_owned(), value.to_owned());
         }
 
-        if method == Method::GET {
-            return Ok(Request {
-                method,
-                path,
-                headers,
-                body: None,
-            });
-        }
-
-        let content_length: usize = headers
-            .get("Content-Length")
-            .ok_or(RequestError::Invalid)?
-            .parse()
-            .map_err(|_| RequestError::Invalid)?;
-
-        let data = helpers::read_n(cursor, content_length)?.to_owned();
-
-        return Ok(Request {
-            method,
-            path,
-            headers,
-            body: Some(Body::Data(data)),
-        });
+        Ok(Metadata::new(method, path, headers))
     }
 }
 
@@ -164,23 +117,25 @@ impl RequestParser {
         self.buf.put(src);
     }
 
-    pub fn request_from_buffer(&mut self) -> Result<Request, RequestError> {
+    pub fn metadata_from_buffer(&mut self) -> Result<Metadata, RequestError> {
         let mut cursor = Cursor::new(&self.buf[..]);
-        let _ = Request::validate(&mut cursor)?;
+        Metadata::validate(&mut cursor)?;
         cursor.set_position(0);
-        let request = Request::parse(&mut cursor)?;
+        let metadata = Metadata::parse(&mut cursor)?;
         self.buf.advance(cursor.position() as usize);
-        Ok(request)
+        Ok(metadata)
     }
 
     pub async fn read_request<R>(&mut self, reader: &mut R) -> Result<Request, RequestParserError>
     where
         R: AsyncRead + Unpin,
     {
+        let metadata;
         loop {
-            match self.request_from_buffer() {
-                Ok(request) => {
-                    return Ok(request);
+            match self.metadata_from_buffer() {
+                Ok(md) => {
+                    metadata = md;
+                    break;
                 }
                 Err(RequestError::Incomplete) => {
                     if 0 == reader.read_buf(&mut self.buf).await? {
@@ -190,6 +145,32 @@ impl RequestParser {
                 Err(e) => return Err(e.into()),
             }
         }
+
+        if metadata.method == Method::GET {
+            return Ok(Request {
+                metadata,
+                body: None,
+            });
+        }
+
+        let content_length: usize = metadata
+            .headers
+            .get("Content-Length")
+            .ok_or(RequestError::Invalid)?
+            .parse()
+            .map_err(|_| RequestError::Invalid)?;
+
+        let mut remaining = self.buf.remaining();
+        // timeout needed...
+        while remaining < content_length {
+            remaining += reader.read_buf(&mut self.buf).await?;
+        }
+        let data = self.buf.copy_to_bytes(content_length).to_vec();
+
+        return Ok(Request {
+            metadata,
+            body: Some(Body::Data(data)),
+        });
     }
 
     pub fn buffer_is_empty(&self) -> bool {
@@ -210,8 +191,8 @@ mod tests {
             &b"GET /index.html HTTP/1.1\r\nHost: localhost:4221\r\nUser-Agent: curl/7.64.1\r\n\r\n"
                 [..],
         );
-        let request = parser.request_from_buffer()?;
-        assert_eq!(request.path, "/index.html");
+        let metadata = parser.metadata_from_buffer()?;
+        assert_eq!(metadata.path, "/index.html");
         Ok(())
     }
 
@@ -219,8 +200,8 @@ mod tests {
     fn no_headers() -> Result<(), anyhow::Error> {
         let mut parser = RequestParser::new();
         parser.put(&b"GET /index.html HTTP/1.1\r\n\r\n"[..]);
-        let request = parser.request_from_buffer()?;
-        assert!(request.headers.is_empty());
+        let metadata = parser.metadata_from_buffer()?;
+        assert!(metadata.headers.is_empty());
         Ok(())
     }
 }
