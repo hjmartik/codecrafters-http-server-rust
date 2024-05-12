@@ -169,7 +169,7 @@ impl RequestParser {
 
         return Ok(Request {
             metadata,
-            body: Some(Body::Data(data)),
+            body: Some(Body {data} ),
         });
     }
 

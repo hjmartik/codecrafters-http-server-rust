@@ -1,14 +1,12 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use tokio::{
-    io::{AsyncRead, AsyncWriteExt, BufWriter},
+    io::{AsyncWriteExt, BufWriter},
     net::{TcpListener, TcpStream},
 };
 
 use self::{
-    request::{Request, RequestParser, RequestParserError},
-    response::Response,
-    router::Router,
+    encoders::EncoderFn, request::{Request, RequestParser, RequestParserError}, response::Response, router::Router
 };
 
 pub mod handlers;
@@ -19,10 +17,10 @@ pub mod request;
 pub mod response;
 pub mod router;
 pub mod status;
+pub mod encoders;
 
-pub enum Body {
-    Reader(Box<dyn AsyncRead + Send + Sync>),
-    Data(Vec<u8>),
+pub struct Body {
+    pub data: Vec<u8>,
 }
 
 #[derive(PartialEq)]
@@ -36,7 +34,7 @@ pub struct State(Arc<StateInner>);
 
 struct StateInner {
     pub file_dir: Option<String>,
-    pub supported_encodings: HashSet<String>,
+    pub supported_encodings: HashMap<String, EncoderFn>,
 }
 
 impl StateInner {
@@ -45,8 +43,9 @@ impl StateInner {
         self
     }
 
-    fn encoding(mut self, encoding: String) -> Self {
-        self.supported_encodings.insert(encoding);
+    fn encoding<E>(mut self, encoding: String, encoder: E) -> Self
+    where E: Fn(Body) -> Result<Body, anyhow::Error> + Send + Sync + 'static {
+        self.supported_encodings.insert(encoding, Box::new(encoder));
         self
     }
 
@@ -59,7 +58,7 @@ impl State {
     fn builder() -> StateInner {
         StateInner {
             file_dir: None,
-            supported_encodings: HashSet::new(),
+            supported_encodings: HashMap::new(),
         }
     }
 
@@ -68,15 +67,20 @@ impl State {
     }
 
     fn supported_encoding(&self, encoding: &str) -> bool {
-        self.0.supported_encodings.contains(encoding)
+        self.0.supported_encodings.contains_key(encoding)
+    }
+
+    fn encoder(&self, encoding: &str) -> Option<&EncoderFn> {
+        self.0.supported_encodings.get(encoding)
     }
 }
 
 pub async fn run_server(listener: TcpListener, file_directory: Option<String>) {
-    let mut state_builder = State::builder().encoding("gzip".to_string());
+    let mut state_builder = State::builder().encoding("gzip".to_string(), encoders::gzip_encoder);
 
     let mut router_builder = Router::builder()
-        .add_pre_middleware(middleware::content_encoding)
+        .add_middleware(middleware::content_encoding)
+        .add_middleware(middleware::content_length)
         .exact_route("/", Method::GET, handlers::ok_handler)
         .exact_route("/user-agent", Method::GET, handlers::user_agent_handler)
         .starts_with_route("/echo/", Method::GET, handlers::echo_handler);
@@ -135,10 +139,10 @@ impl Connection {
         }
         self.write("\r\n".as_bytes()).await?;
         match response.body {
-            Some(Body::Data(data)) => {
+            Some(Body { data }) => {
                 self.write(&data).await?;
             }
-            Some(_) | None => {}
+            None => {}
         }
         self.stream.flush().await?;
         Ok(())

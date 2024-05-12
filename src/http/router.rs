@@ -26,7 +26,7 @@ pub struct Router(Arc<RouterInner>);
 pub struct RouterInner {
     exact: HandlerMap,
     starts_with: Vec<(String, HandlerEntry)>,
-    pre_middleware: Vec<Middleware>,
+    middleware: Vec<Middleware>,
 }
 
 impl RouterInner {
@@ -39,7 +39,7 @@ impl RouterInner {
         }
 
         let mut handler: Handler = Box::new(handler);
-        for middleware in &self.pre_middleware {
+        for middleware in &self.middleware {
             handler = middleware(handler);
         }
 
@@ -53,24 +53,19 @@ impl RouterInner {
         H: Fn(Request, State) -> BoxResponseFuture + Send + Sync + 'static,
     {
         let mut handler: Handler = Box::new(handler);
-        for middleware in &self.pre_middleware {
+        for middleware in &self.middleware {
             handler = middleware(handler);
         }
-        self.starts_with.push((
-            path.to_string(),
-            HandlerEntry {
-                handler,
-                method,
-            },
-        ));
+        self.starts_with
+            .push((path.to_string(), HandlerEntry { handler, method }));
         self
     }
 
-    pub fn add_pre_middleware<M>(mut self, middleware: M) -> Self
+    pub fn add_middleware<M>(mut self, middleware: M) -> Self
     where
         M: Fn(Handler) -> Handler + Send + Sync + 'static,
     {
-        self.pre_middleware.push(Box::new(middleware));
+        self.middleware.push(Box::new(middleware));
         self
     }
 
@@ -84,7 +79,7 @@ impl Router {
         RouterInner {
             exact: HashMap::new(),
             starts_with: Vec::new(),
-            pre_middleware: Vec::new(),
+            middleware: Vec::new(),
         }
     }
 

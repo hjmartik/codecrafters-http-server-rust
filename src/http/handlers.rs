@@ -15,7 +15,6 @@ pub fn echo_handler(request: Request, _state: State) -> BoxResponseFuture {
         let echo = request.metadata.path.strip_prefix("/echo/").unwrap();
         let mut headers = Headers::new();
         headers.insert("Content-Type".to_string(), "text/plain".to_string());
-        headers.insert_header_line(format!("Content-Length: {}", echo.len()));
         Response::from_data(StatusCode::Ok, headers, echo.as_bytes().to_vec())
     })
 }
@@ -41,7 +40,6 @@ pub fn user_agent_handler(request: Request, _state: State) -> BoxResponseFuture 
         let user_agent = request.metadata.headers.get("User-Agent").unwrap_or("");
         let mut headers = Headers::new();
         headers.insert("Content-Type".to_string(), "text/plain".to_string());
-        headers.insert_header_line(format!("Content-Length: {}", user_agent.len()));
         Response::from_data(StatusCode::Ok, headers, user_agent.as_bytes().to_vec())
     })
 }
@@ -65,8 +63,8 @@ pub fn file_get_handler(request: Request, state: State) -> BoxResponseFuture {
             Err(_) => return not_found_handler(request, state).await,
         };
         let mut buf = Vec::new();
-        let length = match file.read_to_end(&mut buf).await {
-            Ok(l) => l,
+        match file.read_to_end(&mut buf).await {
+            Ok(_) => {},
             Err(_) => return internal_error_handler(request, state).await,
         };
 
@@ -75,7 +73,6 @@ pub fn file_get_handler(request: Request, state: State) -> BoxResponseFuture {
             "Content-Type".to_string(),
             "application/octet-stream".to_string(),
         );
-        headers.insert_header_line(format!("Content-Length: {}", length));
 
         Response::from_data(StatusCode::Ok, headers, buf)
     })
@@ -101,7 +98,7 @@ pub fn file_post_handler(mut request: Request, state: State) -> BoxResponseFutur
         };
 
         let data = match request.body.take() {
-            Some(Body::Data(data)) => data,
+            Some(Body { data }) => data,
             _ => return internal_error_handler(request, state).await,
         };
 
